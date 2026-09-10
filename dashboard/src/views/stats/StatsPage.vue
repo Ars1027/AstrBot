@@ -246,6 +246,12 @@
           </div>
           <div v-else class="empty-state">{{ t('empty.sessionCalls', { range: rangeLabel }) }}</div>
         </section>
+        <PluginTokenRanking
+          :items="pluginStats?.days === selectedRange ? pluginStats.items : []"
+          :range-label="rangeLabel"
+          :loading="pluginStatsLoading"
+          :error="pluginStatsError"
+        />
       </template>
     </v-container>
   </div>
@@ -258,6 +264,8 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
 import { useTheme } from 'vuetify'
 import { statsApi } from '@/api/v1'
+import type { PluginTokenStatsData } from '@/api/generated/openapi-v1'
+import PluginTokenRanking from '@/components/stats/PluginTokenRanking.vue'
 import { useI18n, useModuleI18n } from '@/i18n/composables'
 import { copyToClipboard } from '@/utils/clipboard'
 import { getPlatformIcon } from '@/utils/platformUtils'
@@ -337,6 +345,9 @@ const loading = ref(true)
 const errorMessage = ref('')
 const baseStats = ref<BaseStatsResponse | null>(null)
 const providerStats = ref<ProviderTokenStatsResponse | null>(null)
+const pluginStats = ref<PluginTokenStatsData | null>(null)
+const pluginStatsLoading = ref(true)
+const pluginStatsError = ref('')
 const selectedRange = ref<TokenRange>(1)
 const currentTimeMs = ref(Date.now())
 const copiedUmo = ref('')
@@ -457,15 +468,29 @@ async function fetchBaseStats(): Promise<void> {
   baseStats.value = response.data.data
 }
 
-async function fetchProviderStats(): Promise<void> {
-  const response = await statsApi.providerTokens(selectedRange.value)
-  providerStats.value = response.data.data
+async function fetchTokenStats(): Promise<void> {
+  const days = selectedRange.value
+  pluginStatsLoading.value = true
+  const [providerResult, pluginResult] = await Promise.allSettled([
+    statsApi.providerTokens(days), statsApi.pluginTokens(days)
+  ])
+  if (days !== selectedRange.value) return
+  pluginStatsLoading.value = false
+  if (pluginResult.status === 'fulfilled') {
+    pluginStats.value = pluginResult.value.data.data
+    pluginStatsError.value = ''
+  } else {
+    pluginStats.value = null
+    pluginStatsError.value = t('pluginRanking.loadFailed')
+  }
+  if (providerResult.status === 'rejected') throw providerResult.reason
+  providerStats.value = providerResult.value.data.data
 }
 
 async function refreshStats(): Promise<void> {
   try {
     errorMessage.value = ''
-    await Promise.all([fetchBaseStats(), fetchProviderStats()])
+    await Promise.all([fetchBaseStats(), fetchTokenStats()])
   } catch (error) {
     console.error('Failed to load stats page data:', error)
     errorMessage.value = t('errors.loadFailed')
@@ -703,7 +728,7 @@ const providerChartOptions = computed<ApexOptions>(() => ({
 
 watch(selectedRange, async () => {
   try {
-    await Promise.all([fetchBaseStats(), fetchProviderStats()])
+    await Promise.all([fetchBaseStats(), fetchTokenStats()])
   } catch (error) {
     console.error('Failed to refresh stats range:', error)
     errorMessage.value = t('errors.rangeFailed')

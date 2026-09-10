@@ -4396,6 +4396,33 @@ paths:
         "200":
           $ref: "#/components/responses/Ok"
 
+  /api/v1/stats/plugin-tokens:
+    get:
+      tags: [Stats]
+      summary: Get reported token usage grouped by plugin
+      operationId: getPluginTokenStats
+      x-astrbot-scope: system
+      parameters:
+        - name: days
+          in: query
+          description: Supports 1, 3, or 7 days; other integers use 1 day.
+          schema:
+            type: integer
+            default: 1
+      responses:
+        "200":
+          description: Plugin token usage in the selected time window
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    required: [data]
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/PluginTokenStatsData"
+
   /api/v1/stats/versions:
     get:
       tags: [Stats]
@@ -5296,6 +5323,32 @@ components:
         type: string
 
   schemas:
+    PluginTokenStatsData:
+      type: object
+      required: [days, items]
+      properties:
+        days:
+          type: integer
+          enum: [1, 3, 7]
+        items:
+          type: array
+          items:
+            type: object
+            required: [plugin_id, display_name, token_input_other, token_input_cached, token_output, total_tokens]
+            properties:
+              plugin_id:
+                type: string
+              display_name:
+                type: string
+              token_input_other:
+                type: integer
+              token_input_cached:
+                type: integer
+              token_output:
+                type: integer
+              total_tokens:
+                type: integer
+
     SuccessEnvelope:
       type: object
       required: [status, data]

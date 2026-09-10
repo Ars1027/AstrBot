@@ -505,6 +505,73 @@ class StatService:
             logger.error(traceback.format_exc())
             raise StatServiceError(f"Error: {exc!s}") from exc
 
+    async def get_plugin_token_stats(self, days: int) -> dict:
+        """Return token usage grouped by plugin for the selected time range.
+
+        Args:
+            days: Requested range in days: 1, 3, or 7. Other values use 1 day.
+
+        Returns:
+            The selected range and per-plugin input, cached input, output, and
+            total token usage.
+
+        Raises:
+            StatServiceError: Token usage could not be queried.
+        """
+        try:
+            if days not in (1, 3, 7):
+                days = 1
+            now_local = datetime.now().astimezone()
+            start = (now_local - timedelta(days=days)).replace(
+                minute=0, second=0, microsecond=0
+            )
+            total = func.sum(
+                ProviderStat.token_input_other
+                + ProviderStat.token_input_cached
+                + ProviderStat.token_output
+            )
+            async with self.db_helper.get_db() as session:
+                rows = (
+                    await session.execute(
+                        select(
+                            ProviderStat.plugin_id,
+                            func.sum(ProviderStat.token_input_other),
+                            func.sum(ProviderStat.token_input_cached),
+                            func.sum(ProviderStat.token_output),
+                            total,
+                        )
+                        .where(
+                            col(ProviderStat.plugin_id).is_not(None),
+                            ProviderStat.created_at >= start.astimezone(timezone.utc),
+                            ProviderStat.created_at
+                            <= now_local.astimezone(timezone.utc),
+                        )
+                        .group_by(ProviderStat.plugin_id)
+                        .order_by(total.desc(), ProviderStat.plugin_id)
+                    )
+                ).all()
+            names = {
+                plugin.plugin_id: plugin.display_name or plugin.name or plugin.plugin_id
+                for plugin in self.core_lifecycle.star_context.get_all_stars()
+            }
+            return {
+                "days": days,
+                "items": [
+                    {
+                        "plugin_id": plugin_id,
+                        "display_name": names.get(plugin_id, plugin_id),
+                        "token_input_other": input_other,
+                        "token_input_cached": input_cached,
+                        "token_output": output,
+                        "total_tokens": tokens,
+                    }
+                    for plugin_id, input_other, input_cached, output, tokens in rows
+                ],
+            }
+        except Exception as exc:
+            logger.warning("Query plugin token usage failed: %s", exc, exc_info=True)
+            raise StatServiceError(str(exc)) from exc
+
     async def test_ghproxy_connection(self, proxy_url: str | None) -> dict:
         try:
             if not proxy_url:

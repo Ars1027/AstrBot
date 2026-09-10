@@ -72,6 +72,18 @@
     "title": "{range} Session Model Usage Top 10",
     "openConversation": "View conversation"
   },
+  "pluginRanking": {
+    "title": "Plugin token usage · {range}",
+    "coverage": "Includes reported usage from plugin message handlers using the framework SDK or delegated agents. Direct Provider calls, custom clients, and independent background jobs are not covered.",
+    "overlap": "Plugin usage overlaps with the model statistics above. Do not add the two totals.",
+    "plugin": "Plugin",
+    "token_input_other": "Uncached input",
+    "token_input_cached": "Cached input",
+    "token_output": "Output",
+    "total_tokens": "Total tokens",
+    "empty": "No attributed plugin usage in this time range.",
+    "loadFailed": "Failed to load plugin usage. Please try again later."
+  },
   "empty": {
     "platformStats": "No platform message statistics available.",
     "modelCalls": "No model call data for {range}.",

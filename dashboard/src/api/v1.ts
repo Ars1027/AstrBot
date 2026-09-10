@@ -40,6 +40,7 @@ import {
   type ModelScopeSyncRequest,
   type PipInstallRequest,
   type PluginVersionSupportRequest,
+  type PluginTokenStatsData,
   type PluginValidateRepoRequest,
   type PluginConfigFileDeleteRequest,
   type ProviderConfigRequest,
@@ -1781,6 +1782,11 @@ export const statsApi = {
       openApiV1.getProviderTokenStats({
         query: days === undefined ? undefined : { days },
       }),
+    );
+  },
+  pluginTokens(days: number) {
+    return typed<PluginTokenStatsData>(
+      openApiV1.getPluginTokenStats({ query: { days } }),
     );
   },
   version() {

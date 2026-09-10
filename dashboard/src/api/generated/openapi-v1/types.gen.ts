@@ -534,6 +534,20 @@ export type PluginSourceRequest = {
     url: string;
 };
 
+export type PluginTokenStatsData = {
+    days: 1 | 3 | 7;
+    items: Array<{
+        plugin_id: string;
+        display_name: string;
+        token_input_other: number;
+        token_input_cached: number;
+        token_output: number;
+        total_tokens: number;
+    }>;
+};
+
+export type days = 1 | 3 | 7;
+
 export type PluginUpdateRequest = {
     reinstall?: boolean;
 };
@@ -3285,6 +3299,21 @@ export type GetProviderTokenStatsError = unknown;
 export type GetVersionResponse = (SuccessEnvelope);
 
 export type GetVersionError = unknown;
+
+export type GetPluginTokenStatsData = {
+    query?: {
+        /**
+         * Supports 1, 3, or 7 days; other integers use 1 day.
+         */
+        days?: number;
+    };
+};
+
+export type GetPluginTokenStatsResponse = ((SuccessEnvelope & {
+    data: PluginTokenStatsData;
+}));
+
+export type GetPluginTokenStatsError = unknown;
 
 export type GetPublicVersionsResponse = (SuccessEnvelope);
 

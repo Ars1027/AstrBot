@@ -74,6 +74,15 @@ async def get_version(
     return await _run(service.get_version())
 
 
+@router.get("/stats/plugin-tokens")
+async def get_plugin_token_stats(
+    days: int = Query(default=1),
+    _auth: AuthContext = Depends(require_system_scope),
+    service: StatService = Depends(get_service),
+):
+    return await _run(service.get_plugin_token_stats(days))
+
+
 @router.get("/stats/versions")
 async def get_public_versions(
     request: Request,

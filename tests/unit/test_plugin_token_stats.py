@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -14,6 +15,7 @@ from astrbot.core.provider.provider import Provider
 from astrbot.core.star.context import Context
 from astrbot.core.star.star import StarMetadata, star_map
 from astrbot.core.utils.plugin_usage import plugin_usage_context
+from astrbot.dashboard.services.stat_service import StatService
 
 
 @pytest.fixture
@@ -363,6 +365,164 @@ async def test_sdk_cancelled_loop_preserves_known_usage(
     assert len(records) == 1
     assert records[0].status == "aborted"
     assert records[0].token_input_other == 11
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("days,expected", [(1, 21), (3, 42), (7, 63), (2, 21)])
+async def test_plugin_aggregation_windows_and_legacy_totals(
+    temp_db, monkeypatch, days, expected
+):
+    """Sum supported windows without mixing unassigned usage or changing old totals."""
+    import astrbot.dashboard.services.stat_service as stat_module
+
+    now = datetime(2026, 9, 10, 12, 34, tzinfo=timezone.utc)
+
+    class FixedDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return now.astimezone(tz) if tz else now.astimezone().replace(tzinfo=None)
+
+    monkeypatch.setattr(stat_module, "datetime", FixedDatetime)
+    for age in [
+        timedelta(hours=12),
+        timedelta(days=2),
+        timedelta(days=5),
+        timedelta(days=8),
+        -timedelta(hours=1),
+    ]:
+        record = await temp_db.insert_provider_stat(
+            umo="session",
+            provider_id="provider-1",
+            plugin_id="author/plugin-a",
+            agent_type="plugin",
+            stats={"token_usage": {"input_other": 11, "input_cached": 3, "output": 7}},
+        )
+        async with temp_db.get_db() as session:
+            record.created_at = now - age
+            session.add(record)
+            await session.commit()
+    legacy = await temp_db.insert_provider_stat(
+        umo="session",
+        provider_id="provider-1",
+        stats={"token_usage": {"input_other": 99}},
+    )
+    async with temp_db.get_db() as session:
+        legacy.created_at = now - timedelta(hours=1)
+        session.add(legacy)
+        await session.commit()
+    lifecycle = SimpleNamespace(
+        star_context=SimpleNamespace(
+            get_all_stars=lambda: [
+                StarMetadata(author="author", name="plugin-a", display_name="Plugin A"),
+            ]
+        )
+    )
+    service = StatService(temp_db, lifecycle, {})
+    result = await service.get_plugin_token_stats(days)
+    assert result["days"] == (1 if days == 2 else days)
+    assert len(result["items"]) == 1
+    item = result["items"][0]
+    assert item["display_name"] == "Plugin A"
+    assert item["total_tokens"] == expected
+    assert (
+        sum(
+            item[k] for k in ("token_input_other", "token_input_cached", "token_output")
+        )
+        == expected
+    )
+    assert (await service.get_provider_token_stats(1))["range_total_tokens"] == 99
+
+
+@pytest.mark.asyncio
+async def test_plugin_aggregation_boundary_empty_and_uninstalled(temp_db, monkeypatch):
+    """Include the exact lower bound and retain stable names after uninstall."""
+    import astrbot.dashboard.services.stat_service as stat_module
+
+    now = datetime(2026, 9, 10, 12, 34, tzinfo=timezone.utc)
+
+    class FixedDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return now.astimezone(tz) if tz else now.astimezone().replace(tzinfo=None)
+
+    monkeypatch.setattr(stat_module, "datetime", FixedDatetime)
+    service = StatService(
+        temp_db,
+        SimpleNamespace(star_context=SimpleNamespace(get_all_stars=lambda: [])),
+        {},
+    )
+    assert await service.get_plugin_token_stats(1) == {"days": 1, "items": []}
+    boundary = (
+        (now.astimezone() - timedelta(days=1))
+        .replace(minute=0, second=0, microsecond=0)
+        .astimezone(timezone.utc)
+    )
+    for plugin_id, timestamp in [
+        ("author/b", boundary),
+        ("author/a", boundary),
+        ("author/old", boundary - timedelta(microseconds=1)),
+    ]:
+        record = await temp_db.insert_provider_stat(
+            umo="session",
+            provider_id="provider-1",
+            plugin_id=plugin_id,
+            stats={"token_usage": {"input_other": 1}},
+        )
+        async with temp_db.get_db() as session:
+            record.created_at = timestamp
+            session.add(record)
+            await session.commit()
+    items = (await service.get_plugin_token_stats(1))["items"]
+    assert [row["plugin_id"] for row in items] == ["author/a", "author/b"]
+    assert all(row["display_name"] == row["plugin_id"] for row in items)
+
+
+@pytest.mark.asyncio
+async def test_plugin_tokens_api_auth_and_query(temp_db):
+    """The new endpoint uses real dashboard authentication and rejects bad input."""
+    import httpx
+    import jwt
+    from fastapi import FastAPI
+    from fastapi.responses import JSONResponse
+
+    from astrbot.dashboard.api.stats import router
+    from astrbot.dashboard.responses import ApiError
+
+    app = FastAPI()
+    app.include_router(router, prefix="/api/v1")
+    app.state.jwt_secret = "plugin-token-stats-test-secret-32-bytes"
+    app.state.services = SimpleNamespace(
+        stats=StatService(
+            temp_db,
+            SimpleNamespace(star_context=SimpleNamespace(get_all_stars=lambda: [])),
+            {},
+        )
+    )
+
+    @app.exception_handler(ApiError)
+    async def handle_error(request, exc):
+        return JSONResponse({"message": exc.message}, status_code=exc.status_code)
+
+    token = jwt.encode(
+        {"username": "test-user"}, app.state.jwt_secret, algorithm="HS256"
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        assert (await client.get("/api/v1/stats/plugin-tokens")).status_code == 401
+        assert (
+            await client.get(
+                "/api/v1/stats/plugin-tokens",
+                headers={"Authorization": "Bearer invalid"},
+            )
+        ).status_code == 403
+        headers = {"Authorization": f"Bearer {token}"}
+        result = await client.get("/api/v1/stats/plugin-tokens?days=3", headers=headers)
+        assert result.status_code == 200
+        assert result.json()["data"] == {"days": 3, "items": []}
+        assert (
+            await client.get("/api/v1/stats/plugin-tokens?days=bad", headers=headers)
+        ).status_code == 422
 
 
 @pytest.mark.asyncio

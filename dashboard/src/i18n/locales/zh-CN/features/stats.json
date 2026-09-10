@@ -72,6 +72,18 @@
     "title": "{range}会话模型用量 Top 10",
     "openConversation": "查看对话"
   },
+  "pluginRanking": {
+    "title": "{range}插件 Token 用量",
+    "coverage": "仅统计插件消息处理函数通过框架 SDK 或委托 Agent 返回的已报告用量；Provider 直调、自建客户端和独立后台任务暂不覆盖。",
+    "overlap": "插件用量与上方模型统计存在重叠，请勿直接相加。",
+    "plugin": "插件",
+    "token_input_other": "非缓存输入",
+    "token_input_cached": "缓存输入",
+    "token_output": "输出",
+    "total_tokens": "总 Token",
+    "empty": "该时间范围内暂无已归属的插件用量。",
+    "loadFailed": "插件用量加载失败，请稍后重试。"
+  },
   "empty": {
     "platformStats": "当前没有平台消息统计数据。",
     "modelCalls": "{range}还没有模型调用数据。",
