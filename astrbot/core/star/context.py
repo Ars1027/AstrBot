@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import logging
-from asyncio import Queue
+import time
+from asyncio import CancelledError, Queue
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -38,6 +39,7 @@ from astrbot.core.star.filter.platform_adapter_type import (
 )
 from astrbot.core.subagent_orchestrator import SubAgentOrchestrator
 from astrbot.core.utils.astrbot_path import get_astrbot_system_tmp_path
+from astrbot.core.utils.plugin_usage import plugin_usage_context
 
 from ..exceptions import ProviderNotFoundError
 from .filter.command import CommandFilter
@@ -201,15 +203,40 @@ class Context:
         prov = await self.provider_manager.get_provider_by_id(chat_provider_id)
         if not prov or not isinstance(prov, Provider):
             raise ProviderNotFoundError(f"Provider {chat_provider_id} not found")
-        llm_resp = await prov.text_chat(
-            prompt=prompt,
-            image_urls=image_urls,
-            audio_urls=audio_urls,
-            func_tool=tools,
-            contexts=contexts,
-            system_prompt=system_prompt,
-            **kwargs,
-        )
+        usage_context = plugin_usage_context.get()
+        token = plugin_usage_context.set(None)
+        start_time = time.time()
+        try:
+            llm_resp = await prov.text_chat(
+                prompt=prompt,
+                image_urls=image_urls,
+                audio_urls=audio_urls,
+                func_tool=tools,
+                contexts=contexts,
+                system_prompt=system_prompt,
+                **kwargs,
+            )
+        finally:
+            plugin_usage_context.reset(token)
+        if usage_context is not None and llm_resp.usage is not None:
+            try:
+                await self._db.insert_provider_stat(
+                    umo=usage_context.umo,
+                    plugin_id=usage_context.plugin_id,
+                    provider_id=chat_provider_id,
+                    provider_model=kwargs.get("model") or prov.get_model(),
+                    agent_type="plugin",
+                    status="error" if llm_resp.role == "err" else "completed",
+                    stats={
+                        "token_usage": vars(llm_resp.usage).copy(),
+                        "start_time": start_time,
+                        "end_time": time.time(),
+                    },
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Persist plugin token usage failed: %s", exc, exc_info=True
+                )
         return llm_resp
 
     async def tool_loop_agent(
@@ -307,24 +334,52 @@ class Context:
                 "read_tool", request.func_tool.get_tool("astrbot_file_read_tool")
             )
 
-        await agent_runner.reset(
-            provider=prov,
-            request=request,
-            run_context=AgentContextWrapper(
-                context=agent_context,
-                tool_call_timeout=tool_call_timeout,
-            ),
-            tool_executor=tool_executor,
-            agent_hooks=agent_hooks,
-            streaming=streaming,
-            **other_kwargs,
-        )
-        async for _ in agent_runner.step_until_done(max_steps):
-            pass
-        llm_resp = agent_runner.get_final_llm_resp()
-        if not llm_resp:
-            raise Exception("Agent did not produce a final LLM response")
-        return llm_resp
+        usage_context = plugin_usage_context.get()
+        token = plugin_usage_context.set(None)
+        status = "error"
+        try:
+            await agent_runner.reset(
+                provider=prov,
+                request=request,
+                run_context=AgentContextWrapper(
+                    context=agent_context,
+                    tool_call_timeout=tool_call_timeout,
+                ),
+                tool_executor=tool_executor,
+                agent_hooks=agent_hooks,
+                streaming=streaming,
+                **other_kwargs,
+            )
+            async for _ in agent_runner.step_until_done(max_steps):
+                pass
+            llm_resp = agent_runner.get_final_llm_resp()
+            if not llm_resp:
+                raise Exception("Agent did not produce a final LLM response")
+            status = "error" if llm_resp.role == "err" else "completed"
+            if agent_runner.was_aborted():
+                status = "aborted"
+            return llm_resp
+        except CancelledError:
+            status = "aborted"
+            raise
+        finally:
+            plugin_usage_context.reset(token)
+            runner_stats = getattr(agent_runner, "stats", None)
+            if usage_context is not None and runner_stats is not None:
+                try:
+                    await self._db.insert_provider_stat(
+                        umo=usage_context.umo,
+                        plugin_id=usage_context.plugin_id,
+                        provider_id=chat_provider_id,
+                        provider_model=prov.get_model(),
+                        agent_type="plugin",
+                        status=status,
+                        stats=runner_stats.to_dict(),
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Persist plugin token usage failed: %s", exc, exc_info=True
+                    )
 
     async def get_current_chat_provider_id(self, umo: str) -> str:
         """获取当前使用的聊天模型 Provider ID。
