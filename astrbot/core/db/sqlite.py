@@ -73,6 +73,18 @@ class SQLiteDatabase(BaseDatabase):
             await self._ensure_platform_message_history_checkpoint_column(conn)
             await self._ensure_chatui_project_workspace_columns(conn)
             await self._ensure_conversation_indexes(conn)
+            columns = await conn.execute(text("PRAGMA table_info(provider_stats)"))
+            if "plugin_id" not in {row[1] for row in columns.fetchall()}:
+                await conn.execute(
+                    text("ALTER TABLE provider_stats ADD COLUMN plugin_id VARCHAR")
+                )
+            await conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_provider_stats_plugin_created_at "
+                    "ON provider_stats (created_at, plugin_id) "
+                    "WHERE plugin_id IS NOT NULL"
+                )
+            )
             # The table-level unique constraint already provides an index for UMO
             # lookups. Older schemas also created this redundant explicit index.
             await conn.execute(text("DROP INDEX IF EXISTS ix_umo_aliases_umo"))
@@ -272,6 +284,7 @@ class SQLiteDatabase(BaseDatabase):
         status: str = "completed",
         stats: dict | None = None,
         agent_type: str = "internal",
+        plugin_id: str | None = None,
     ) -> ProviderStat:
         """Insert a provider stat record for a single agent response."""
         stats = stats or {}
@@ -295,6 +308,7 @@ class SQLiteDatabase(BaseDatabase):
                     conversation_id=conversation_id,
                     provider_id=provider_id,
                     provider_model=provider_model,
+                    plugin_id=plugin_id,
                     token_input_other=token_input_other,
                     token_input_cached=token_input_cached,
                     token_output=token_output,

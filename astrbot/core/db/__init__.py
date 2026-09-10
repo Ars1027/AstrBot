@@ -120,6 +120,7 @@ class BaseDatabase(abc.ABC):
         status: str = "completed",
         stats: dict | None = None,
         agent_type: str = "internal",
+        plugin_id: str | None = None,
     ) -> ProviderStat:
         """Insert a per-response provider stat record."""
         ...

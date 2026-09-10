@@ -202,6 +202,9 @@ class InternalAgentSubStage(Stage):
                 logger.debug("acquired session lock for llm request")
                 agent_runner: AgentRunner | None = None
                 runner_registered = False
+                req: ProviderRequest | None = None
+                stats_recorded = False
+                failure_status = "error"
                 try:
                     build_cfg = replace(
                         self.main_agent_cfg,
@@ -378,11 +381,12 @@ class InternalAgentSubStage(Stage):
                     asyncio.create_task(
                         _record_internal_agent_stats(
                             event,
-                            req,
+                            replace(req),
                             agent_runner,
                             final_resp,
                         )
                     )
+                    stats_recorded = True
 
                     # 检查事件是否被停止，如果被停止则不保存历史记录
                     if not event.is_stopped() or agent_runner.was_aborted():
@@ -402,7 +406,23 @@ class InternalAgentSubStage(Stage):
                             provider_type=agent_runner.provider.meta().type,
                         ),
                     )
+                except (asyncio.CancelledError, GeneratorExit):
+                    failure_status = "aborted"
+                    raise
                 finally:
+                    if (
+                        not stats_recorded
+                        and req is not None
+                        and req.plugin_id is not None
+                        and getattr(agent_runner, "stats", None) is not None
+                    ):
+                        await _record_internal_agent_stats(
+                            event,
+                            req,
+                            agent_runner,
+                            None,
+                            status_override=failure_status,
+                        )
                     if runner_registered and agent_runner is not None:
                         unregister_active_runner(event.unified_msg_origin, agent_runner)
 
@@ -529,8 +549,18 @@ async def _record_internal_agent_stats(
     req: ProviderRequest | None,
     agent_runner: AgentRunner | None,
     final_resp: LLMResponse | None,
+    *,
+    status_override: str | None = None,
 ) -> None:
-    """Persist internal agent stats without affecting the user response flow."""
+    """Persist internal agent stats without affecting the user response flow.
+
+    Args:
+        event: Event that initiated the agent run.
+        req: Request carrying optional conversation and plugin attribution.
+        agent_runner: Runner holding cumulative usage, if initialized.
+        final_resp: Final model response, if available.
+        status_override: Explicit status for an interrupted plugin-delegated run.
+    """
     if agent_runner is None:
         return
 
@@ -547,7 +577,9 @@ async def _record_internal_agent_stats(
             else None
         )
 
-        if agent_runner.was_aborted():
+        if status_override is not None:
+            status = status_override
+        elif agent_runner.was_aborted():
             status = "aborted"
         elif final_resp is not None and final_resp.role == "err":
             status = "error"
@@ -562,6 +594,7 @@ async def _record_internal_agent_stats(
             status=status,
             stats=stats.to_dict(),
             agent_type="internal",
+            plugin_id=req.plugin_id if req is not None else None,
         )
     except Exception as e:
         logger.warning("Persist provider stats failed: %s", e, exc_info=True)

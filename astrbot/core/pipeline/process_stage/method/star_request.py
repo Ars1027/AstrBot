@@ -7,8 +7,10 @@ from typing import Any
 from astrbot.core import logger
 from astrbot.core.message.message_event_result import MessageEventResult
 from astrbot.core.platform.astr_message_event import AstrMessageEvent
+from astrbot.core.provider.entities import ProviderRequest
 from astrbot.core.star.star import star_map
 from astrbot.core.star.star_handler import EventType, StarHandlerMetadata
+from astrbot.core.utils.plugin_usage import PluginUsageContext, plugin_usage_context
 
 from ...context import PipelineContext, call_event_hook, call_handler
 from ..stage import Stage
@@ -46,8 +48,28 @@ class StarRequestSubStage(Stage):
             logger.debug(f"plugin -> {md.name} - {handler.handler_name}")
             try:
                 wrapper = call_handler(event, handler.handler, **params)
-                async for ret in wrapper:
-                    yield ret
+                usage_context = PluginUsageContext(
+                    md.plugin_id, event.unified_msg_origin
+                )
+                try:
+                    while True:
+                        token = plugin_usage_context.set(usage_context)
+                        try:
+                            ret = await anext(wrapper)
+                        except StopAsyncIteration:
+                            break
+                        finally:
+                            # Downstream stages run outside the plugin's scope.
+                            plugin_usage_context.reset(token)
+                        if isinstance(ret, ProviderRequest):
+                            ret.plugin_id = md.plugin_id
+                        yield ret
+                finally:
+                    token = plugin_usage_context.set(usage_context)
+                    try:
+                        await wrapper.aclose()
+                    finally:
+                        plugin_usage_context.reset(token)
                 if event.is_stopped():
                     break
                 event.clear_result()  # 清除上一个 handler 的结果

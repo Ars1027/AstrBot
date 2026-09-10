@@ -41,7 +41,7 @@ class PlatformStat(SQLModel, table=True):
 
 
 class ProviderStat(TimestampMixin, SQLModel, table=True):
-    """Per-response provider stats for internal agent runs."""
+    """Provider usage for internal agent runs and plugin SDK generations."""
 
     __tablename__: str = "provider_stats"
 
@@ -56,6 +56,7 @@ class ProviderStat(TimestampMixin, SQLModel, table=True):
     conversation_id: str | None = Field(default=None, index=True)
     provider_id: str = Field(nullable=False, index=True)
     provider_model: str | None = Field(default=None, index=True)
+    plugin_id: str | None = Field(default=None)
     token_input_other: int = Field(default=0, nullable=False)
     token_input_cached: int = Field(default=0, nullable=False)
     token_output: int = Field(default=0, nullable=False)

@@ -65,6 +65,8 @@ async def call_handler(
         except Exception as e:
             logger.error(f"Previous Error: {trace_}")
             raise e
+        finally:
+            await ready_to_call.aclose()
     elif inspect.iscoroutine(ready_to_call):
         # 如果只是一个协程, 直接执行
         ret = await ready_to_call
